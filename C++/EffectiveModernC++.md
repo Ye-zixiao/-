@@ -89,8 +89,8 @@ decltype(auto) authAndAccess(Container&& c, Index i) {
 对于这一条款，我们**需要记住**：
 
 + <font color=green>**`decltype`总是不加修改的产生变量或者表达式的类型。**</font>
-+ 对于`T`类型的不是单纯的变量名的左值表达式，`decltype`总是产出`T`的引用即`T&`。
-+ <font color=green>**C++14支持`decltype(auto)`，就像`auto`一样，推导出类型，但是它使用`decltype`的规则进行推导。**</font>
++ 对于`T`类型的不是单纯的变量名的左值表达式，`decltype`总是产出`T`的引用即`T&`，比如里面加个`()`。
++ <font color=green>**C++14支持`decltype(auto)`，就像`auto`一样，推导出类型，但是它使用`decltype`的规d则进行推导。**</font>
 
 
 
@@ -729,12 +729,13 @@ Pimpl（pointer to implementation）惯用法指的是将类中的数据成员�
 ```cpp
 // file: Widget.h
 class Widget {
-public:
-    Widget();
-    ...
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+ public:
+  Widget();
+  ...
+      
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 }
 
 // file: main.cpp
@@ -748,18 +749,19 @@ Widget w;
 ```cpp
 // file: Widget.h
 class Widget {
-public:
-    Widget();
-    ~Widget();
-    ...
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+ public:
+  Widget();
+  ~Widget();
+  ...
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 }
 
 // file: Widget.cpp
 struct Widget::Impl {
-    ...
+  ...
 };
 
 Widget::~Widget() = default;
@@ -780,4 +782,206 @@ Widget::~Widget() = default;
 
 
 ## 五. 右值引用，移动语义，完美转发
+
+
+
+
+
+## 六. *lambda*表达式
+
+### 条款31：避免使用默认捕获模式
+
+对于*lambda*表达式而言，不管是何种捕获方式都应该避免使用默认捕获方式。因为**默认引用捕获模式可能会带来悬空引用的问题，而默认按值捕获方式可能会诱骗使用者移位能够解决悬空引用的问题**（但实际上并没有）**，甚至还会让用户以为lambda表达式创建的闭包是独立的**（事实上也是不独立的）。
+
+- 首先，**按引用捕获会导致闭包中包含对某个局部变量或者形参的引用，要知道变量或形参只在定义*lambda*的作用域中可用。如果该*lambda*创建的闭包生命周期超过了局部变量或者形参的声明周期，那么闭包的引用将会变成悬空引用。**
+
+  相比于直接使用默认按引用捕获`[&]`，从长期来看，显式列出*lambda*依赖的局部变量和形参，是更加符合软件工程规范的做法。
+
+- 从直观的角度上来讲，使用按值捕获的方式好像可以完全解决按引用捕获方式产生的悬空引用问题，但是实际上并不是如此。**相反，按值捕获并不能完全解决悬空引用的问题。如果用户按值捕获的是一个指针，并将该指针拷贝到*lambda*对应的闭包里，那么这样并不能避免*lambda*外`delete`该指针的行为，从而导致悬空指针的问题。**例如下面的例子：
+
+  ```cpp
+  vector<function<bool(int)>> filters;
+  
+  class Widget {
+   public:
+    explicit Widget(int divisor)
+        : divisor_(divisor) {}
+  
+    void addFilter() const {
+      filters.emplace_back(
+          [=](int value) { return value % divisor_ == 0; });
+    }
+  
+   private:
+    int divisor_;
+  };
+  
+  void doSomeworks() {
+    auto pw = make_unique<Widget>(5);
+    pw->addFilter();
+  // 离开doSomeworks()函数作用域之后，其中产生的闭包保存的this指针
+  // 就会变成空悬指针，要知道this指针才是addFilter()函数中lambda所
+  // 能捕获的变量，而不是divisor_本身。
+  }
+  ```
+
+  造成这个问题的主要原因在于：**捕获只能应用于*lambda*被创建时所在作用域里的non-`static`局部变量（包括形参）**。在上面的例子中捕获的是类对象`Widget`的`this`指针而不是`divisor_`这个私有数据成员。不过针对捕获私有数据成员这一问题，C++14提出了通用*lambda*捕获来解决这一问题：
+
+  ```cpp
+  void Widget::addFilter() const {
+      filters.emplace_back(
+      	[divisor_ = divisor_](int value) { return value % divisor_; });
+  }
+  ```
+
+  同时**默认的按值捕获方式还有另一个缺点：它们看上去保存着外部数据的备份，好像预示着相关的闭包是独立并且不受外部数据变化的影响的，但实际上并不然。**尤其是对于静态存储生命周期的对象而言，这些对象定义在全局空间或命名空间，或在函数、类、文件中声明为`static`，它们能够在*lambda*中使用但实际上它们并不能被其捕获，但默认按值捕获可能会误导人！
+
+
+
+对于这一条款，我们**需要记住**：
+
++ **默认的按引用捕获可能会导致悬空引用。**
++ <font color=green>**默认的按值捕获对于悬空指针很敏感（尤其是`this`指针），并且它会误导人产生*lambda*是独立的想法。**</font>
+
+
+
+### 条款32：使用初始化捕获来移动对象到闭包中
+
+除了上面C++11引入的引用捕获和值捕获之外，在C++14中还有一种更为高级、更为通用的捕获方式——**通用捕获**，也称为**初始化捕获**，其形式如下所示：
+
+```cpp
+[enclosure_member = initial-expr](Param-Type ...) mutable -> Ret-Type { ... };
+```
+
+在初始化捕获方式中我们可以在捕获列表中指定一个由*lambda*产生的闭包类内部的数据成员，并且这个数据成员会被该表达式所初始化。通过这种方式我们就可以在C++14中实现原先C++11原先不支持的移动捕获方式，如下例所示：
+
+```cpp
+class Widget {
+ public:
+  bool isValidated() const;
+  bool isProcessed() const;
+  bool isArchived() const;
+};
+
+auto pw = std::make_shared<Widget>();
+...
+auto func = [pw = std::move(pw)] { // pw会被std::move(pw)返回的右值初始化
+    return pw->isValidated() && pw->isArchived(); };
+```
+
+特别的，在这种捕获方式中，“`=`”左侧的作用域是闭包类，右侧的作用域和*lambda*定义所在的作用域相同。如果我们想在C++11中实现这种通用捕获所带来的移动捕获效果，那么我们可以通过如下两种方式来进行实现：
+
+1. 定义一个具名的函数对象来实现这一点，但这有悖于我们使用*lambda*的初衷。
+
+2. 使用`std::bind()`来进行模拟C++14的通用捕获：创建一个*lambda*来模拟指定可调用对象的逻辑功能，使用`std::bind`中的内部数据成员来保存`std::move()`移动产生的对象。如下例所示：
+
+   ```cpp
+   auto func = std::bind(
+       	[](const std::unique_ptr<Widget>& pw) {
+               return pw->isValidated() && 
+                      pw->isArchived(); },
+      		std::move(pw) // bind产生的可调用对象中的指定数据成员会被移动构造
+   		);
+   ```
+
+   
+
+对于这一条款，我们**需要记住**：
+
+* 使用C++14的初始化捕获将对象移动到闭包中。
+* <font color=green>**在C++11中，通过手写类或`std::bind`的方式来模拟初始化捕获。**</font>
+
+
+
+### 条款33：对`auto&&`形参使用`decltype`进行完美转发`std::forward`
+
+在C++14中引入了泛型*lambda*，它使得我们在*lambda*表达式中可以使用`auto`关键字，且它的实现也非常直接：即将闭包类的`operator()`函数实现为一个函数模板。如下所示：
+
+```cpp
+// 泛型lambda
+auto f = [](auto x) { return func(normalize(x)); };
+
+// 闭包类的实现
+class Enclosure {
+ public:
+  template<typename T>
+  auto operator()(T x) {
+      return func(normalize(x));
+  }
+};
+```
+
+这种通过函数模板实现的泛型*lambda*也就意味着它也会相应的遇到类似于函数模板一样的问题，包括形参的完美转发问题。试想一下函数模板是通过如下的方式解决函数完美转发的问题：
+
+```cpp
+class Enclosure {
+ public:
+  template<typename T>
+  decltype(auto) operator()(T&& x) {
+      return func(normalize(std::forward<T>(x)));
+  }
+};
+```
+
+类似的，我们在泛型*lambda*中使用完美转发的方式也是相似的：**①将x改成通用引用；然后②通过`std::foward`来进行形参的转发。不过由于泛型模板中没有可用的模板参数T，所以我们需要使用到`decltype`来获取形参x的实际类型**（x若是左值引用，那么`decltype(x)`也是左值引用；x若是右值引用，那么`decltype(x)`就是右值引用。不过实际上中对于`decltype(x)`返回的右值引用还会引发一个引用折叠过程）。这样，就有了如下的解决方式：
+
+```cpp
+auto f = [](auto&& x) {
+    return func(normalize(std::forward<decltype(x)>(x)));
+};
+```
+
+
+
+对于这一条款，我们需要记住：
+
+- <font color=green>**对`auto&&`形参使用`decltype`以`std::forward`（完美转发）它们（指形参）。**</font>
+
+
+
+### 条款34：优先考虑*lambda*而非`std::bind`
+
+相比于`std::bind`而言，lambda表达式的好处在于：
+
+1. *lambda*表达式在代码上更易理解阅读。
+
+2. **在`std::bind`中，参数表达式被即时求值，而不是放到调用绑定的可调用对象之时求值。这意味着使用`std::bind`可能存在着一些隐蔽的错误**。例如下面的设置定时器函数的功能，在`std::bind`中变成了调用`std::bind`之后的一小时执行定时器，而不是调用其产生的可调用对象后一个小时执行定时器：
+
+   ```cpp
+   auto setTimerAfter1h = std::bind(setTimer, 
+                                    steady_clock::now() + 1h,
+                                    _1);
+   ```
+
+   而如果使用lambda表达式，则根本就没有这样的问题，且程序意图更清晰，也能知道传入的参数应该是什么类型的（即使`std::bind`能够通过一些其他的方式能够解决，其展现的程序也会现得很不自然）：
+
+   ```cpp
+   auto setTimerAfter1h = [](Timer* timer) {
+       setTimer(steady_clock::now() + 1h, timer);
+   };
+   ```
+
+3. **`std::bind`对重载函数的处理能力差**。如果将一个重载了多版本的函数传递给`std::bind`，它可能无法知道自己需要绑定到具体哪个函数身上，例如下面的代码：
+
+   ```cpp
+   void func(int ival1, double dval);
+   void func(int ival, string_view sv);
+   
+   auto funcB = std::bind(func, 32, _1); // std::bind无法知道自己应该绑定到哪个func
+   ```
+
+   如果想让上面的代码正确，那么一种解决方法就是将func显式转换成函数指针，然后传递到`std::bind`身上。这也意味着lambda相比而言存在内联优化的可能，产生的代码性能也就更好，而由于绑定bind对象中由于存储的是函数指针所以编译器基本上不会为其内联优化。
+
+4. 相对于处理更复杂的逻辑作业，lambda更显得心应手。
+
+5. **lambda的变量捕获方式和参数传递方式都是显式的，而`std::bind`都是隐式的，容易造成代码模糊不清。**默认情况下，`std::bind`绑定的实参都是通过值捕获的方式存储在绑定对象内部（如果想要通过引用捕获，那么需要使用到`std::ref()`来实现之）；而在绑定对象调用时实参则是通过引用的方式进行，因为此类对象的调用运算符使用了完美转发。
+
+除此之外，`std::bind`在C++11中还是有一定自己的用处：①实现C++11不支持的移动捕获；②支持多态函数对象。不过在C++14中前者已经被lambda支持，而后者可以通过泛型lambda实现，所以在C++14之后我们完全可以说：忘了`std::bind`吧！
+
+
+
+对于这一条款，我们**需要记住**：
+
++ 与使用`std::bind`相比，*lambda*更易读，更具表达力并且可能更高效。
++ 只有在C++11中，`std::bind`可能对实现移动捕获或绑定带有模板化函数调用运算符的对象时会很有用。
 
