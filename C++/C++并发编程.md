@@ -141,7 +141,7 @@ void doAsyncWork() {
 
 #### 3.2.2 通过`packaged_task`将期物与可调用对象绑定
 
-`std::packaged_task`将一个期物`std::future`绑定到一个函数或可调用对象上，我们可以通过`get_future()`接口来获取其相关联的期物。当这个打包任务对象被调用时，它就调用相关联的函数或可调用对象，并让期物就绪，同时将返回值作为关联数据存储。显然这种东西可能对于线程池的构建有一定的帮助。
+`std::packaged_task`将一个期物`std::future`绑定到一个函数或可调用对象上，我们可以通过`get_future()`接口来获取其相关联的期物。当这个打包任务对象被调用时，它就调用相关联的函数或可调用对象，当这个函数执行完毕后期物就变成就绪状态，同时将返回值作为关联数据存储。显然这种东西可能对于线程池的构建有一定的帮助。需要注意的是，`std::packaged_task`仅可移动。
 
 作为示例，我们可以通过`std::packaged_task`+`std::thread`来实现将一个异步任务放到一个背景线程中执行，然后返回一个期物给当前的线程，从而达到类似`std::async()`的效果：
 
@@ -493,19 +493,19 @@ int main() {
 
 #### 4.3.4 获取-释放顺序
 
-获取-释放顺序模型胜于松弛顺序模型，它对原子操作的顺序性加以了一定程度的约束。虽然这种限制仅仅是局部的，但它确实是我们追求多线程程序对于关键操作的正确顺序性和高效的性能之间的最佳平衡。获取-释放语义的理论依据正是我们在上面<缓存一致和顺序一致>小节中提出的SC-DRF模型，它要求对于那些存在数据竞争的地方使用同步原语来保证没有数据竞争，并达到顺序一致性；但对于那些不存在数据竞争的地方并不加以特殊处理，任由编译器去对其进行优化。在保证程序正确性的同时，实现顺序性和性能之间的有效平衡。
+获取-释放顺序模型胜于松弛顺序模型，它对原子操作的顺序性加以了一定程度的约束。虽然这种限制仅仅是局部的，但它确实是我们追求多线程程序对于关键操作的正确顺序性和高效的性能之间的最佳平衡。获取-释放语义的理论依据类似于我们在上面<缓存一致和顺序一致>小节中提出的SC-DRF模型，它要求对于那些存在数据竞争的地方使用同步原语来保证没有数据竞争，并达到顺序一致性；但对于那些不存在数据竞争的地方并不加以特殊处理，任由编译器去对其进行优化。在保证程序正确性的同时，实现顺序性和性能之间的有效平衡。
 
 具体而言，获取acquire和释放release语义指的是：
 
-- 释放语义是一种只能应用于共享原子变量写操作的属性。它可以用来**防止释放-写操作**（包括读-修改-写和普通存储）**之前的任何内存读写操作重排序到其之后，使得所有的之前内存访问操作都happens-before当前操作。**
+- 释放语义是一种只能应用于共享原子变量写操作的属性。它可以用来**防止释放-写操作**（包括读-修改-写和普通存储）**之前的任何内存读写操作重排序到其之后，使得所有的之前内存访问操作都*happens-before*当前操作。**
 
   ![img](https://preshing.com/images/write-release.png)
 
-- 获取语义是一种只能应用于共享原子变量读操作的属性。它可以用来**防止获取-读操作**（包括读-修改-写和普通存储）**之后的任何内存读写操作重排序到其之前，使得当前操作happens-before所有之后的内存访问操作。**
+- 获取语义是一种只能应用于共享原子变量读操作的属性。它可以用来**防止获取-读操作**（包括读-修改-写和普通存储）**之后的任何内存读写操作重排序到其之前，使得当前操作*happens-before*所有之后的内存访问操作。**
 
   ![img](https://preshing.com/images/read-acquire.png)
 
-获取-释放语义的好处在于：**它可以使得线程t1的释放-写操作A和当前线程t2的获取-读操作B之间在构成“与之同步”关系的时候，保证线程t1中先前所有的内存访问操作都*happens-before*当前线程t2获取-读操作B以及后续的内存访问操作，从保证线程之间的顺序性**。如下图所示：
+获取-释放语义的好处在于：**它可以使得线程t1的释放-写操作A和当前线程t2的获取-读操作B之间在构成“与之同步”关系的时候，保证线程t1中先前所有的内存访问操作都*happens-before*当前线程t2获取-读操作B以及后续的内存访问操作，从而保障了线程之间的顺序性**（*happens-before*的传递性）。如下图所示：
 
 <img src="https://preshing.com/images/two-cones.png" alt="img" style="zoom:80%;" />
 
@@ -536,62 +536,194 @@ int main() {
 }
 ```
 
+但我们必须认识到，内存模型既是对编译器和CPU的约束，也同样是对编程者的约束。获取-释放语义未必如顺序一致性模型那样万能，如果我们对其不当使用，那么程序仍然可能存在不正确的执行结果。
 
+```cpp
+std::atomic<bool> x(false), y(false);
+std::atomic<int> z(0);
+
+void write_x() {
+    x.store(true, std::memory_order_release);  // (1)
+}
+
+void write_y() {
+    y.store(true, std::memory_order_release);  // (2)
+}
+
+void read_x_then_y() {
+    while(!x.load(std::memory_order_acquire)); // (3) 
+    if(y.load(std::memory_order_acquire))      // (4)
+        ++z;
+}
+
+void read_y_then_x() {
+    while(!y.load(std::memory_order_acquire)); // (5)
+    if(x.load(std::memory_order_acquire))      // (6)
+        ++z;
+}
+
+int main() {
+    std::thread t1(write_x);
+    std::thread t2(write_y);
+    std::thread t3(read_x_then_y);
+    std::thread t4(read_y_then_x);
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+    std::cout << z << std::endl; // 输出0、1、2都有可能！
+    return 0;
+}
+```
+
+在上面的例子中，虽然看起来能够变量z能够最终得到一个非零的结果，但实际上这里的获取-释放语义并不能够保证该程序最终能够输出想要的结果。因为对于`read_x_then_y`线程而言操作（3）虽然能够与`write_x`线程发生*synchronizes-with*的关系，使得它们之间具有*happens-before*关系。但在这里操作（1）之前并没有任何关于变量y写入`true`的操作，更不用说发生在`write_y`线程上的操作（2）和操作（4）之间是否具有*happens-before*关系。因此获取-释放语义无法保证是否能够返回`true`，对于`read_y_then_x`线程中的操作（6）也是同样的道理，所以这个程序最终有可能输出0！它们之间的关系如下所示：
+
+<img src="image/Snipaste_2021-07-12_20-18-12.png" alt="Snipaste_2021-07-12_20-18-12" style="zoom: 80%;" />
+
+而相比之下，顺序一致性模型就可以保证上述的程序如我们想象中的那样一定输出一个非零的结果。
+
+> 在大多数平台上释放-获取语义都是通过内存屏障的方式来实现的。
 
 
 
 #### 4.3.5 释放-消费顺序
 
+除了上面三种内存模型之外，在C++11中还有一种释放-消费顺序内存模型，它所提供的顺序性保证能力介于释放-获取顺序内存模型和松弛顺序内存模型之间。之所以C++11想要引入释放-消费语义的目的是想进一步降低为实现程序顺序性而付出的性能开销，因为在一些平台上释放-获取语义完全是通过像内存屏障这样的机制来实现的，而这种实现所付出的代价可能非常高昂。
+
+另一方面大多数的平台（包括一些弱内存序平台）都提供了这样一种机制：**若指令之间存在着数据依赖关系（通过同一个寄存器或内存单元的读写），那么即使不使用内存屏障指令也可以保证这些指令之间不发生重排序。但需要注意的是这一规则并不保证具有相互独立关系的数据依赖串链上的指令之间的有序性。**C++语言标准的制定者正是希望借助这个事实来构建释放-消费语义，而这些指令之间的关系就是我们先前提到过的*carries-a-denpendency-to*。
+
+具体的，如果一个线程t1执行了释放-写操作，而另一个线程t2通过消费-读操作读取了这个最新值，那么这两个操作之间就会构成一个名为*dependency-order-before*的关系。这个关系可以保证线程t1上所有释放-写以及之前的内存操作都*happens-before*线程t2上的消费-读操作。同时**释放-消费语义可以保证一个从消费操作开始的数据依赖指令串链都对上述线程t1释放-写以及之前的操作可见，这也意味着它们之间也存在着*happens-before*关系。如果没有数据依赖关系，那么这个顺序性（以及所带来的可见性）是无法保证的！**如下所示：
+
+```cpp
+std::atomic<int*> guard(nullptr);
+int payload = 0;
+
+void producer() {
+    payload = 42;
+    guard.store(&payload, std::memory_order_release);
+}
+
+void consumer() {
+    int res = 0, *p = nullptr;
+    while(!(p = guard.load(std::memory_order_consume)));
+    res = *p; // 上下两条指令之间存在carries-a-dependency-to关系
+}
+
+int main() {
+    std::thread t1(producer);
+    std::thread t2(consumer);
+    t1.join();
+    t2.join();
+    return 0;
+}
+```
+
+<img src="https://preshing.com/images/dependency-ordered-guard.png" alt="img" style="zoom:80%;" />
+
+这便是释放-消费操作所带来的好处。但可惜在一些编译器上并不一定如此遵循，[The Purpose of memory_order_consume in C++11](https://preshing.com/20140709/the-purpose-of-memory_order_consume-in-cpp11/)指出有些编译器甚至为了简单省事，直接使用内存屏障来实现这一语义。同时需要指出的是C++17标准并不推荐使用这一语义。
+
+> 除此之外，如果用户显式的不想在消费读操作之后构成数据依赖串链，那么我们可以显式地使用`std::kill_dependency()`来打断之，并允许编译器对其进行优化。
+
 
 
 #### 4.3.6 释放序列与synchronizes-with
+
+在上面的描述中我们知道：如果一个线程t1中对共享原子变量的释放-写操作写入的最新值被一个线程t2中相应的获取-读操作所读取，那么我们就说这两个操作构成了一个“与之同步”的关系。而“与之同步”关系可以保证线程t1中的释放-写操作以及之前的所有内存操作都*happens-before*线程t2对应获取-读操作，这是我们实现多线程程序可靠执行顺序的有力保证。但如果线程t1释放-写操作和线程t2之间，这个原子变量被另一个线程所改变，使得线程t2读到了另一个新值，那么此时我们是否还能够在这个多线程程序上获得我们想要的顺序性（既*happens-before*关系）呢？
+
+释放序列正是来解决这个问题的。C++标准规定：**如果一个存储操作被标记为`memory_order_release`、`memory_order_acq_rel`或`memory_order_seq_cst`，而加载操作被标记为`memory_order_acquire`、`memory_order_consume`或`memory_order_seq_cst`，并且程序的执行链中的每一个操作都加载由之前写入的最新值，那么该操作链条就构成了释放序列，并由此使得我们可以推出最初的存储操作和最终的加载操作存在“与之同步”或“依赖先序于”的关系。甚至中间的操作链条中的所有原子的读-修改-写操作可以拥有任意的内存顺序。**我们可以通过如下的示例来了解这一重要规则：
+
+```cpp
+std::vector<int> queue_data;
+std::atomic<int> count(0);
+
+// thread 1
+void producer() {
+    queue_data.push_back(1);
+    queue_data.push_back(2);
+    count.store(2, std::memory_order_release); // (1)
+}
+
+// thread 2
+void consumer1() {
+    int i2 = 0;
+    while((i2 = count.fetch_sub(1, std::memory_order_acquire)) <= 0) // (2)
+        std::this_thread::sleep_for(1s);
+    int x2 = queue_data[i2 - 1];
+    process(x2);
+}
+
+// thread 3
+void consumer2() {
+    int i3 = 0;
+    while((i3 = count.fetch_sub(1, std::memory_order_acquire)) <= 0) // (3)
+        std::this_thread::sleep_for(1s);
+    int x3 = queue_data[i3 - 1];
+    process(x3);
+}
+```
+
+假设在上面的程序中，线程t1先将2释放-写操作存储到原子变量count中，然后线程t2通过获取-读操作（2）从中读取到这个最新值1。显然上述两个释放-获取操作构成了“与之同步”关系，我们可以很容易的推导出线程t1中的`push_back()`操作都*happens-before*线程t2读取使用它们的操作。在另一边，线程t3紧随其后通过获取-读操作（3）从原子变量中读取到了由线程t2写入的最新值1（原子操作和缓存一致性协议保证我们可以读到最新值，当然并不是立即可见），然后我们发现操作（2）并不是释放-写操作，“与之同步”关系显然是不成立的，这也意味着我们无法通过“与之同步”以及*happens-before*的传递性推知线程t1的`push_back()`操作*hapens-before*线程t3中使用它们的内存访问操作。
+
+按照传统的获取-释放语义、“与之同步”关系的概念上面的分析是正确的：这个程序可能存在错误。但实际上，释放序列的规定保证了上面的程序示例如果按照所述的顺序执行，那么这个程序显然是没有问题的，规则可以保证我们最初的（释放，或更强）写操作与最终的读操作（只要不是松弛模型）存在“与之同步”的关系，进而使得我们可以推导出想要的*happens-before*关系。这就是释放序列规则的价值所在，如下图所示：
+
+<img src="image/Snipaste_2021-07-15_20-06-52.png" alt="Snipaste_2021-07-15_20-06-52" style="zoom:80%;" />
 
 
 
 #### 4.3.7 内存屏障
 
+内存屏障也称内存栅栏（memory fence），是一种保障内存顺序的强约束。具体的：
 
+- **一个释放屏障可以防止任何位于其之前的内存读写操作和位于其之后的写内存操作进行内存重排序。**
+- **一个获取屏障可以防止任何位于其之前的内存读操作和位于其之后的内存读写操作进行内存重排序。**
+
+屏障的使用方式类似于获取-释放内存顺序模型（实际上在不少的平台上获取-释放内存顺序模型就是通过平台相关的内存屏障实现的），它可以可以做出如下的保证：
+
+1. 如果线程t2上的**获取操作**看到了线程t1**释放屏障**之后发生的存储结果，那么该屏障与获取读操作同步。
+2. 如果线程t2上的**获取屏障**之前的加载操作读到了线程t1上**释放操作**所写入的最新值，那么该释放操作与获取屏障同步。
+3. 如果线程t2上的**获取屏障**之前的加载操作读到了线程t1上的**释放屏障**之后存储操作写入的最新值，那么该释放屏障与获取屏障同步。
+
+显然通过上面的“与之同步”关系我们就可以很容易地推导出线程之间操作的happens-before关系，并进而保证线程之间正确的执行顺序。
+
+```cpp
+std::atomic<bool> x(false), y(false);
+int z = 0;
+
+// thread 1
+void write_x_then_y() {
+    x.store(true, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    y.store(true, std::memory_order_relaxed);
+}
+
+// thread 2
+void read_y_then_x() {
+    while(!y.load(std::memory_order_relaxed));
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if(x.load(std::memory_order_relaxed))
+        ++z;
+}
+```
+
+在上述的程序示例中，一旦线程t1中的松弛写操作存储进y的最新值true被线程t2中的松弛读操作所读取，即这一条件正好对应着上述的第三条规则（一个线程中的获取屏障之前的加载操作读取到了另一个线程释放屏障之后的存储操作），那么显然我们可以推导出释放屏障和获取屏障之间是存在着“与之同步”的关系，那么进而可以知道`x.store()` *happens-before* `x.load()`。这样也就保证了z的结果必然不是为0。类似于如下一样的效果：
+
+<img src="https://preshing.com/images/two-cones-fences.png" alt="img" style="zoom:80%;" />
 
 
 
 ## 五. 参考资料
 
-1. [为什么程序员需要关心顺序一致性（Sequential Consistency）而不是Cache一致性（Cache Coherence？）](http://www.parallellabs.com/2010/03/06/why-should-programmer-care-about-sequential-consistency-rather-than-cache-coherence/)
+1. [《C++并发编程》](https://detail.tmall.com/item.htm?id=630491671381&spm=a1z09.2.0.0.65522e8dm27746&_u=f1lp7iba8a82)
 2. [《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-3. [如何理解 C++11 的六种 memory order？](https://www.zhihu.com/question/24301047)
-4. [The Purpose of memory_order_consume in C++11](https://preshing.com/20140709/the-purpose-of-memory_order_consume-in-cpp11/)
-5. [The Happens-Before Relation](https://preshing.com/20130702/the-happens-before-relation/)
-6. [The Synchronizes-With Relation](https://preshing.com/20130823/the-synchronizes-with-relation/)
-7. [Acquire and Release Semantics](https://preshing.com/20120913/acquire-and-release-semantics/)
-8. [百度brpc文档-atomic_instructions](https://github.com/apache/incubator-brpc/blob/master/docs/cn/atomic_instructions.md)
-9. [C++11中的内存模型下篇 - C++11支持的几种内存模型](https://www.codedump.info/post/20191214-cxx11-memory-model-2/#%E4%BF%AE%E6%94%B9%E5%8E%86%E5%8F%B2)
-10. [C++11中的内存模型上篇 - 内存模型基础](https://www.codedump.info/post/20191214-cxx11-memory-model-1/)
-11. [cppreference-内存顺序](https://zh.cppreference.com/w/cpp/atomic/memory_order)
-
-
-
-这个阅读笔记必须围绕如下几个问题：
-
-- 什么是内存模型？什么是共享内存模型？什么是消息传递模型？[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 为什么我们需要内存模型？[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 为什么说C++11之前的内存模型是单线程的，无法保证多线程程序的正确执行？[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 编译器和CPU对我们的程序做了什么？①编译器按照单线程内存模型对程序进行优化；②CPU使用了[乱序执行技术](https://en.wikipedia.org/wiki/Out-of-order_execution)，这么做的动机非常自然，CPU要尽量塞满每个cycle，在单位时间内运行尽量多的指令。[百度brpc文档-atomic_instructions](https://github.com/apache/incubator-brpc/blob/master/docs/cn/atomic_instructions.md)
-- 如果我们显式的组织编译器的优化是否真的能够保证我们的多线程程序达到我们想要的目的？可能不行，一方面这个不行指的是即使阻止编译器对多线程程序的不良优化，也未必能保证CPU在执行我们的多线程程序时能够正确的按照我们想要的顺序执行程序并达到想要的结果（违反SC原则）；其次如果我们禁止了编译器对程序的优化，那么所有的操作严格按照代码顺序执行，所有的操作都触发*[cache coherence](http://en.wikipedia.org/wiki/Cache_coherence)*操作以确保它们的副作用在跨线程间的*visibility*顺序（也就说单单依靠硬件提供的缓存一致性所带来的性能损耗过大）。[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 我为什么会觉得程序执行的可见性在多个不同的线程之家是非常重要的？甚至可以说它是引出顺序一致性问题的关键！因为各个处于不同CPU核上的线程必须知道其他线程在某个关键共享变量上的执行顺序。[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 顺序一致性是保证我们多线程程序的正确执行的核心！[为什么程序员需要关心顺序一致性（Sequential Consistency）而不是Cache一致性（Cache Coherence？）](http://www.parallellabs.com/2010/03/06/why-should-programmer-care-about-sequential-consistency-rather-than-cache-coherence/)
-- 究竟如何才能允许用户编写正确的多线程代码呢？[《C++0x漫谈》系列之：多线程内存模型](https://blog.csdn.net/pongba/article/details/1659952)
-- 怎么理解缓存一致性问题和顺序一致性问题？[为什么程序员需要关心顺序一致性（Sequential Consistency）而不是Cache一致性（Cache Coherence？）](http://www.parallellabs.com/2010/03/06/why-should-programmer-care-about-sequential-consistency-rather-than-cache-coherence/)
-- C++11做出了哪些改进？[官方文档memory_order](https://zh.cppreference.com/w/cpp/atomic/memory_order)
-- *Acquire*语意是说所有下方的操作都不能往其上方移动，*Release*语意则相反。[百度brpc文档-atomic_instructions](https://github.com/apache/incubator-brpc/blob/master/docs/cn/atomic_instructions.md)
-- “与之同步“关系和顺序一致性有着何种关联？”与之同步“关系在C++内存模型中有着何种地位？
-- C++ memory consistency model 标准从语义上讲定义的是**原子变量操作之间内存可见性的顺序,** 并没有保证单个原子变量操作的内存**立即可见性.**[C++ memory consistency model 本质的理解](https://zhuanlan.zhihu.com/p/158932307)
-- 顺序----执行顺序对于内存一致性模型的重要性，正是即使是原子操作的执行顺序也能够在不同的线程中有着不同的可见性？
-- 释放语义和内存获取语义只保障在两个线程之间有效，使得载入操作所在的线程能够见到另一个线程写入该原子变量之前的所有内存访问操作，但这并不保证其他的线程的可见性？
-- wait-free和lock-free算法的含义（它们都是用来描述一个并发算法，不是用来描述它有没有用到锁，当然前提肯定是使用了无锁操作，即原子操作）[对wait-free和lock-free的理解](https://zhuanlan.zhihu.com/p/342921323)
-
-
-
-百度brpc的文档对获取acquire和释放release语义的描述其实非常好，我该怎么重新组织这部分的语言来描述C++11的内存模型呢？
-
-A happens-before B表示的是程序正如我们所愿正确顺序执行的语义，而不是代表在实际多线程程序中执行时操作A真的在操作B之前完成！
-
+3. [为什么程序员需要关心顺序一致性（Sequential Consistency）而不是Cache一致性（Cache Coherence？）](http://www.parallellabs.com/2010/03/06/why-should-programmer-care-about-sequential-consistency-rather-than-cache-coherence/)
+4. [如何理解 C++11 的六种 memory order？](https://www.zhihu.com/question/24301047)
+5. [The Purpose of memory_order_consume in C++11](https://preshing.com/20140709/the-purpose-of-memory_order_consume-in-cpp11/)
+6. [The Happens-Before Relation](https://preshing.com/20130702/the-happens-before-relation/)
+7. [The Synchronizes-With Relation](https://preshing.com/20130823/the-synchronizes-with-relation/)
+8. [Acquire and Release Semantics](https://preshing.com/20120913/acquire-and-release-semantics/)
+9. [Acquire and Release Fences](https://preshing.com/20130922/acquire-and-release-fences/)
+10. [百度brpc文档-atomic_instructions](https://github.com/apache/incubator-brpc/blob/master/docs/cn/atomic_instructions.md)
+11. [C++11中的内存模型下篇 - C++11支持的几种内存模型](https://www.codedump.info/post/20191214-cxx11-memory-model-2/#%E4%BF%AE%E6%94%B9%E5%8E%86%E5%8F%B2)
+12. [C++11中的内存模型上篇 - 内存模型基础](https://www.codedump.info/post/20191214-cxx11-memory-model-1/)
+13. [cppreference-内存顺序](https://zh.cppreference.com/w/cpp/atomic/memory_order)
+14. [What does “release sequence” mean?](https://stackoverflow.com/questions/38565650/what-does-release-sequence-mean)
