@@ -233,3 +233,26 @@ typedef struct zskiplist {
 
 
 
+### 1.5 整数集合
+
+整数集合intset主要是用来优化集合在仅使用整数且数据规模不大的情况下的一种优化手段，其实现如下所示：
+
+```c
+typedef struct intset {
+    // 编码方式
+    uint32_t encoding;
+    // 集合包含的元素数量
+    uint32_t length;
+    // 保存元素的数组
+    int8_t contents[];
+} intset;
+```
+
+其中intset中的encoding决定了集合中元素的编码方式，而length指出集合中有多少个元素，contents虽然是一个整数数组，但整数元素的大小和编码方式完全由前面的编码方式决定。如下图所示：
+
+<img src="image/graphviz-acf7fe010d7b09c5d2500c72eb555863e67ad74f.png" alt="graphviz-acf7fe010d7b09c5d2500c72eb555863e67ad74f" style="zoom:67%;" />
+
+由于整数集合中的元素的数据类型完全取决于encoding字段，所以在一开始intset会尽可能使用更小的数据类型来存储整数集合中的元素。但如果向这样的整数集合中加入一个更大类型的数据时，就会发生”升级“的过程，然后将新的元素添加到整数集合中去。
+
+
+
